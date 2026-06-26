@@ -1,0 +1,56 @@
+DarkOS input and mouse driver checklist
+
+Kernel modules:
+- i8042 (built into kernel)
+- libps2 (built into kernel)
+- atkbd (built into kernel)
+- applespi
+- cros-ec-keyb
+- cypress-sf
+- gpio-keys
+- gpio-keys-polled
+- hyperv-keyboard
+- sparse-keymap
+- matrix-keymap
+- psmouse
+- sermouse
+- mousedev
+- evdev
+- joydev
+- uinput
+- usbhid
+- hid-generic
+- hid-cherry
+- hid-asus
+- hid-lenovo
+- hid-keytouch
+- hid-prodikeys
+- hid-multitouch
+- hid-logitech
+- hid-logitech-dj
+- hid-logitech-hidpp
+- hid-microsoft
+- hid-apple
+- hid-magicmouse
+- wacom
+- synaptics-usb
+- synaptics-i2c
+- xhci/ehci/ohci/uhci USB host controllers
+- virtio-input
+
+Xorg drivers:
+- evdev (keyboard and pointer)
+- libinput (keyboard and pointer)
+- vmmouse
+- synaptics
+- mtrack
+- wacom
+- joystick
+
+Tools:
+- xinput
+- evtest
+- kbd tools
+- xkbcomp
+- setxkbmap
+- xkeyboard-config

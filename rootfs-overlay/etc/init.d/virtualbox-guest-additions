@@ -1,0 +1,40 @@
+#!/sbin/openrc-run
+
+description="VirtualBox guest integration service"
+command=/usr/sbin/VBoxService
+command_args="--foreground"
+pidfile=/run/vboxguest-service.pid
+start_stop_daemon_args="--make-pidfile --pidfile ${pidfile} --background"
+
+depend() {
+	need localmount darkos-fb
+	before sddm
+}
+
+is_virtualbox() {
+	for field in product_name sys_vendor board_vendor; do
+		info="/sys/class/dmi/id/$field"
+		[ -r "$info" ] || continue
+		grep -Eiq 'virtualbox|innotek' "$info" && return 0
+	done
+	return 1
+}
+
+start() {
+	if ! is_virtualbox || [ ! -x "$command" ]; then
+		return 0
+	fi
+
+	ebegin "Starting VirtualBox guest integration"
+	/sbin/modprobe vboxguest 2>/dev/null || true
+	/sbin/modprobe vboxsf 2>/dev/null || true
+	start-stop-daemon --start $start_stop_daemon_args --exec "$command" -- $command_args
+	eend $?
+}
+
+stop() {
+	[ -f "$pidfile" ] || return 0
+	ebegin "Stopping VirtualBox guest integration"
+	start-stop-daemon --stop --pidfile "$pidfile"
+	eend $?
+}

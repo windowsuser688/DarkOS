@@ -1,0 +1,6 @@
+XTerm*backarrowKey: false
+XTerm*ptyInitialErase: true
+XTerm*ttyModes: erase ^?
+XTerm*deleteIsDEL: true
+XTerm*metaSendsEscape: true
+XTerm*termName: xterm-256color

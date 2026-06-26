@@ -1,0 +1,225 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /run/darkos /run/darkos/xorg.conf.d /tmp/.X11-unix
+chmod 1777 /tmp /tmp/.X11-unix 2>/dev/null || true
+mkdir -p /run/udev /run/udev/data
+
+finish_conf() {
+	if [ -f /run/darkos/xorg.conf.d/20-darkos-input.conf ]; then
+		printf '\n' >> /run/darkos/xorg.conf
+		cat /run/darkos/xorg.conf.d/20-darkos-input.conf >> /run/darkos/xorg.conf
+	fi
+	echo /run/darkos/xorg.conf
+	exit 0
+}
+
+if [ -x /sbin/udevd ]; then
+	/sbin/udevd --daemon 2>/dev/null || true
+fi
+
+detect_vm_graphics() {
+	for pci in /sys/bus/pci/devices/*; do
+		[ -r "$pci/vendor" ] || continue
+		vendor=$(cat "$pci/vendor" 2>/dev/null)
+		case "$vendor" in
+			0x80ee) echo vboxvideo; return ;; # VirtualBox
+			0x15ad) echo vmware; return ;; # VMware
+			0x1234) echo bochs; return ;; # QEMU Bochs
+			0x1013) echo cirrus; return ;; # QEMU Cirrus
+		esac
+	done
+}
+
+for module in \
+	i8042 libps2 atkbd applespi cros_ec_keyb cypress_sf gpio_keys \
+	gpio_keys_polled hyperv_keyboard sparse_keymap matrix_keymap \
+	serio_raw psmouse evdev mousedev joydev uinput \
+	sermouse synaptics_usb synaptics_i2c \
+	xhci_pci ehci_pci ohci_pci uhci_hcd hid_generic usbhid virtio_input \
+	hid_cherry hid_asus hid_lenovo hid_keytouch hid_prodikeys \
+	uhid hid_multitouch hid_logitech hid_logitech_dj hid_logitech_hidpp \
+	hid_microsoft hid_apple hid_magicmouse wacom i2c_hid i2c_hid_acpi \
+	snd snd_pcm snd_seq snd_rawmidi snd_hda_intel snd_intel8x0 snd_usb_audio \
+	drm drm_kms_helper simpledrm i915 amdgpu radeon nouveau ast mgag200 \
+	bochs qxl virtio_gpu cirrus_qemu vmwgfx vboxvideo
+do
+	modprobe -q "$module" 2>/dev/null || true
+done
+
+if [ -x /bin/udevadm ]; then
+	/bin/udevadm trigger --action=add 2>/dev/null || true
+	/bin/udevadm settle --timeout=5 2>/dev/null || true
+fi
+
+key_event=$(
+	awk 'BEGIN { RS=""; FS="\n" }
+		/I: Bus=0003/ && /Handlers=.*kbd/ && match($0, /event[0-9]+/) {
+			print substr($0, RSTART, RLENGTH); exit
+		}' /proc/bus/input/devices 2>/dev/null || true
+)
+if [ -z "$key_event" ]; then
+	key_event=$(
+		awk 'BEGIN { RS=""; FS="\n" }
+			/Handlers=.*kbd/ && match($0, /event[0-9]+/) {
+				print substr($0, RSTART, RLENGTH); exit
+			}' /proc/bus/input/devices 2>/dev/null || true
+	)
+fi
+ptr_event=$(
+	awk 'BEGIN { RS=""; FS="\n" }
+		/Handlers=.*mouse/ && /B: ABS=/ && match($0, /event[0-9]+/) {
+			print substr($0, RSTART, RLENGTH); exit
+		}' /proc/bus/input/devices 2>/dev/null || true
+)
+if [ -z "$ptr_event" ]; then
+	ptr_event=$(
+		awk 'BEGIN { RS=""; FS="\n" }
+			/Handlers=.*mouse/ && match($0, /event[0-9]+/) {
+				print substr($0, RSTART, RLENGTH); exit
+			}' /proc/bus/input/devices 2>/dev/null || true
+	)
+fi
+[ -n "$key_event" ] || [ ! -e /dev/input/event0 ] || key_event=event0
+[ -n "$ptr_event" ] || [ ! -e /dev/input/event2 ] || ptr_event=event2
+[ -n "$ptr_event" ] || [ ! -e /dev/input/event1 ] || ptr_event=event1
+
+if [ -n "$key_event" ] && [ -n "$ptr_event" ]; then
+	cat > /run/darkos/xorg.conf.d/20-darkos-input.conf <<EOF
+Section "ServerFlags"
+	Option "AutoAddDevices" "false"
+EndSection
+
+Section "InputDevice"
+	Identifier "DarkOS Keyboard"
+	Driver "evdev"
+	Option "Device" "/dev/input/$key_event"
+	Option "CoreKeyboard" "true"
+	Option "XkbRules" "evdev"
+	Option "XkbModel" "pc105"
+	Option "XkbLayout" "us"
+EndSection
+
+Section "InputDevice"
+	Identifier "DarkOS Pointer"
+	Driver "evdev"
+	Option "Device" "/dev/input/$ptr_event"
+	Option "CorePointer" "true"
+EndSection
+EOF
+fi
+
+i=0
+while [ "$i" -lt 20 ]; do
+	[ -e /dev/dri/card0 ] && break
+	[ -s /proc/fb ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+
+if [ -e /dev/dri/card0 ]; then
+	cat > /run/darkos/xorg.conf <<'EOF'
+Section "ServerLayout"
+	Identifier "DarkOS Layout"
+	Screen "Screen0"
+	InputDevice "DarkOS Keyboard" "CoreKeyboard"
+	InputDevice "DarkOS Pointer" "CorePointer"
+EndSection
+
+Section "Device"
+	Identifier "DarkOS DRM"
+	Driver "modesetting"
+EndSection
+
+Section "Monitor"
+	Identifier "Monitor0"
+EndSection
+
+Section "Screen"
+	Identifier "Screen0"
+	Device "DarkOS DRM"
+	Monitor "Monitor0"
+EndSection
+EOF
+	finish_conf
+fi
+
+if [ -s /proc/fb ]; then
+	set -- $(sed -n '1{s/[[:space:]].*//;p;q;}' /proc/fb)
+	fbnum=${1:-0}
+	case "$fbnum" in
+		*[!0-9]*|'') fbnum=0 ;;
+	esac
+	if [ ! -e "/dev/fb$fbnum" ]; then
+		mknod "/dev/fb$fbnum" c 29 "$fbnum" 2>/dev/null || true
+	fi
+	chmod 660 "/dev/fb$fbnum" 2>/dev/null || true
+	driver_name=$(detect_vm_graphics)
+	xorg_driver="fbdev"
+	case "$driver_name" in
+		vboxvideo|vmware)
+			xorg_driver="$driver_name"
+			;;
+		*)
+			xorg_driver="fbdev"
+			;;
+	esac
+
+	cat > /run/darkos/xorg.conf <<EOF
+Section "ServerLayout"
+	Identifier "DarkOS Layout"
+	Screen "Screen0"
+	InputDevice "DarkOS Keyboard" "CoreKeyboard"
+	InputDevice "DarkOS Pointer" "CorePointer"
+EndSection
+
+Section "Device"
+	Identifier "DarkOS Framebuffer"
+	Driver "$xorg_driver"
+EOF
+	if [ "$xorg_driver" = "fbdev" ]; then
+		cat >> /run/darkos/xorg.conf <<EOF
+		Option "fbdev" "/dev/fb$fbnum"
+EOF
+	fi
+	cat >> /run/darkos/xorg.conf <<EOF
+EndSection
+
+Section "Monitor"
+	Identifier "Monitor0"
+EndSection
+
+Section "Screen"
+	Identifier "Screen0"
+	Device "DarkOS Framebuffer"
+	Monitor "Monitor0"
+EndSection
+EOF
+	finish_conf
+fi
+
+cat > /run/darkos/xorg.conf <<'EOF'
+Section "ServerLayout"
+	Identifier "DarkOS Layout"
+	Screen "Screen0"
+	InputDevice "DarkOS Keyboard" "CoreKeyboard"
+	InputDevice "DarkOS Pointer" "CorePointer"
+EndSection
+
+Section "Device"
+	Identifier "DarkOS VESA"
+	Driver "vesa"
+EndSection
+
+Section "Monitor"
+	Identifier "Monitor0"
+EndSection
+
+Section "Screen"
+	Identifier "Screen0"
+	Device "DarkOS VESA"
+	Monitor "Monitor0"
+EndSection
+EOF
+
+finish_conf

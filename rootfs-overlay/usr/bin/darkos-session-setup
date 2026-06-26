@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if command -v darkos-gtk-setup >/dev/null 2>&1; then
+	darkos-gtk-setup >/tmp/darkos-gtk-setup.log 2>&1 || true
+fi
+
+if command -v darkos-desktop-setup >/dev/null 2>&1; then
+	darkos-desktop-setup >/tmp/darkos-desktop-setup.log 2>&1 || true
+fi

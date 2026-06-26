@@ -1,0 +1,765 @@
+#!/bin/sh
+set -eu
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:${PATH:-}
+TARGET_MNT=${TARGET_MNT:-/mnt/darkos-install}
+INITRAMFS_STAGE=
+INSTALL_USER=
+INSTALL_PASSWORD=
+INSTALL_AUTOLOGIN=no
+
+die() {
+	echo "darkos-install: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<'EOF'
+darkos-install - install DarkOS to a disk
+
+usage:
+  darkos-install                  auto-detect the target disk when safe
+  darkos-install /dev/sda
+  darkos-install /dev/nvme0n1
+
+Without an argument, DarkOS selects a single obvious internal install disk
+automatically. If no safe disk or multiple safe disks are found, it asks.
+
+The selected disk is erased and replaced with a hybrid BIOS/UEFI DarkOS
+installation: BIOS boot partition, EFI system partition, and ext4 root.
+EOF
+}
+
+need_cmd() {
+	command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+part_name() {
+	case "$1" in
+		*[0-9]) printf '%sp%s\n' "$1" "$2" ;;
+		*) printf '%s%s\n' "$1" "$2" ;;
+	esac
+}
+
+is_mounted() {
+	mountpoint -q "$1" 2>/dev/null
+}
+
+cleanup() {
+	set +e
+	if [ -n "$INITRAMFS_STAGE" ]; then
+		rm -rf "$INITRAMFS_STAGE"
+	fi
+	for path in "$TARGET_MNT/run" "$TARGET_MNT/sys" "$TARGET_MNT/proc" "$TARGET_MNT/dev"; do
+		if is_mounted "$path"; then
+			umount -R "$path" 2>/dev/null || umount -l "$path" 2>/dev/null || true
+		fi
+	done
+	if is_mounted "$TARGET_MNT/boot/efi"; then
+		umount "$TARGET_MNT/boot/efi"
+	fi
+	if is_mounted "$TARGET_MNT"; then
+		umount "$TARGET_MNT"
+	fi
+}
+
+list_disks() {
+	echo "Available disks:"
+	lsblk -dpno NAME,SIZE,TYPE,RM,RO,MODEL | awk '$3 == "disk" { printf "  %-16s %-8s rm=%s ro=%s %s\n", $1, $2, $4, $5, $6 }'
+}
+
+disk_has_mounts() {
+	disk=$1
+
+	lsblk -nrpo MOUNTPOINT "$disk" 2>/dev/null | awk 'NF { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+disk_transport() {
+	disk=$1
+
+	lsblk -dnpo TRAN "$disk" 2>/dev/null | awk 'NF { print $1; exit }'
+}
+
+is_auto_install_candidate() {
+	disk=$1
+	base=$(basename "$disk")
+
+	[ -b "$disk" ] || return 1
+	case "$(lsblk -dnpo TYPE "$disk" 2>/dev/null)" in
+		disk) ;;
+		*) return 1 ;;
+	esac
+
+	case "$base" in
+		loop*|ram*|zram*|fd*|sr*|dm-*|md*)
+			return 1
+			;;
+	esac
+
+	sys="/sys/block/$base"
+	if [ -r "$sys/ro" ] && [ "$(cat "$sys/ro")" != "0" ]; then
+		return 1
+	fi
+	if [ -r "$sys/removable" ] && [ "$(cat "$sys/removable")" != "0" ]; then
+		return 1
+	fi
+	case "$(disk_transport "$disk")" in
+		usb|USB)
+			return 1
+			;;
+	esac
+
+	disk_has_mounts "$disk" && return 1
+	return 0
+}
+
+auto_detect_disk() {
+	candidates=
+
+	while read -r disk type rest; do
+		[ "$type" = "disk" ] || continue
+		if is_auto_install_candidate "$disk"; then
+			candidates="${candidates}${candidates:+
+}$disk"
+		fi
+	done <<EOF
+$(lsblk -dnpo NAME,TYPE 2>/dev/null)
+EOF
+
+	count=$(printf '%s\n' "$candidates" | awk 'NF { n++ } END { print n + 0 }')
+	case "$count" in
+		1)
+			printf '%s\n' "$candidates" | awk 'NF { print; exit }'
+			return 0
+			;;
+		0)
+			return 1
+			;;
+		*)
+			return 2
+			;;
+	esac
+}
+
+select_target_disk() {
+	explicit=${1:-}
+
+	if [ -n "$explicit" ]; then
+		printf '%s\n' "$explicit"
+		return 0
+	fi
+	if [ -n "${DARKOS_INSTALL_DISK:-}" ]; then
+		printf '%s\n' "$DARKOS_INSTALL_DISK"
+		return 0
+	fi
+
+	auto_disk=
+	auto_status=0
+	auto_disk=$(auto_detect_disk) || auto_status=$?
+	case "$auto_status" in
+		0)
+			echo "Auto-selected target disk: $auto_disk" >&2
+			printf '%s\n' "$auto_disk"
+			return 0
+			;;
+		2)
+			echo "Multiple safe install disks found; choose one explicitly." >&2
+			;;
+		*)
+			echo "No obvious internal install disk found." >&2
+			;;
+	esac
+
+	list_disks >&2
+	echo >&2
+	printf 'Target disk, for example /dev/sda or /dev/nvme0n1: ' >&2
+	IFS= read -r manual_disk
+	printf '%s\n' "$manual_disk"
+}
+
+confirm_wipe() {
+	disk=$1
+	echo
+	echo "WARNING: this will erase all partitions and data on $disk."
+	echo "Type exactly: INSTALL DarkOS"
+	printf '> '
+	IFS= read -r answer
+	[ "$answer" = "INSTALL DarkOS" ] || die "install cancelled"
+}
+
+valid_username() {
+	case "$1" in
+		""|root|bin|daemon|messagebus|dhcpcd|sddm|nobody)
+			return 1
+			;;
+	esac
+	printf '%s\n' "$1" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$'
+}
+
+read_secret() {
+	prompt=$1
+	SECRET_VALUE=
+	printf '%s' "$prompt"
+	if [ -t 0 ]; then
+		old_stty=$(stty -g 2>/dev/null || true)
+		stty -echo 2>/dev/null || true
+		IFS= read -r SECRET_VALUE || SECRET_VALUE=
+		if [ -n "$old_stty" ]; then
+			stty "$old_stty" 2>/dev/null || true
+		fi
+		printf '\n'
+	else
+		IFS= read -r SECRET_VALUE || SECRET_VALUE=
+	fi
+}
+
+prompt_user_setup() {
+	echo
+	echo "DarkOS installed user setup"
+	echo "The installed system will use this account for the Plasma Wayland login screen."
+	while :; do
+		printf 'Username: '
+		IFS= read -r INSTALL_USER
+		if valid_username "$INSTALL_USER"; then
+			break
+		fi
+		echo "Use lowercase letters, numbers, '_' or '-', starting with a letter or '_'."
+	done
+
+	while :; do
+		read_secret "Password: "
+		pass1=$SECRET_VALUE
+		read_secret "Password again: "
+		pass2=$SECRET_VALUE
+		if [ -n "$pass1" ] && [ "$pass1" = "$pass2" ]; then
+			INSTALL_PASSWORD=$pass1
+			break
+		fi
+		echo "Passwords did not match, or the password was empty."
+	done
+
+	while :; do
+		printf 'Enable autologin for %s? [y/N]: ' "$INSTALL_USER"
+		IFS= read -r answer
+		case "$answer" in
+			y|Y|yes|YES)
+				INSTALL_AUTOLOGIN=yes
+				break
+				;;
+			""|n|N|no|NO)
+				INSTALL_AUTOLOGIN=no
+				break
+				;;
+			*)
+				echo "Answer y or n."
+				;;
+		esac
+	done
+}
+
+copy_system() {
+	target=$1
+	echo "Copying DarkOS root filesystem..."
+	rsync -aH --delete \
+		--exclude='/dev/*' \
+		--exclude='/proc/*' \
+		--exclude='/sys/*' \
+		--exclude='/run/*' \
+		--exclude='/tmp/*' \
+		--exclude='/mnt/*' \
+		--exclude='/media/*' \
+		--exclude='/lowerroot/*' \
+		--exclude='/overlay/*' \
+		--exclude='/var/cache/apk/*' \
+		--exclude='/var/log/*' \
+		/ "$target/"
+
+	mkdir -p "$target/dev" "$target/proc" "$target/sys" "$target/run" \
+		"$target/tmp" "$target/mnt" "$target/media/cdrom" \
+		"$target/var/cache/apk" "$target/var/log" "$target/boot"
+	chmod 1777 "$target/tmp"
+	rm -f "$target/etc/darkos/live-image" \
+		"$target/etc/doas.d/darkos-live.conf" \
+		"$target/root/Desktop/install-darkos.desktop" \
+		"$target/etc/skel/Desktop/install-darkos.desktop"
+	chown -R 0:0 "$target"
+}
+
+mount_target_apis() {
+	target=$1
+
+	mount --rbind /dev "$target/dev"
+	mount --make-rslave "$target/dev"
+	mount -t proc proc "$target/proc"
+	mount --rbind /sys "$target/sys"
+	mount --make-rslave "$target/sys"
+	mount --rbind /run "$target/run"
+	mount --make-rslave "$target/run"
+}
+
+ensure_installed_init() {
+	target=$1
+
+	mkdir -p "$target/sbin"
+	[ -x "$target/sbin/darkrcinit" ] || die "installed target is missing /sbin/darkrcinit"
+	rm -f "$target/sbin/init"
+	ln -s darkrcinit "$target/sbin/init"
+
+	if ! chroot "$target" /bin/sh -c 'test -x /sbin/init'; then
+		die "installed target has no working /sbin/init"
+	fi
+}
+
+ensure_target_group() {
+	target=$1
+	group=$2
+
+	if ! grep -q "^$group:" "$target/etc/group"; then
+		chroot "$target" /usr/sbin/groupadd "$group"
+	fi
+}
+
+ensure_group_line() {
+	target=$1
+	name=$2
+	gid=$3
+
+	if ! grep -q "^$name:" "$target/etc/group"; then
+		printf '%s:x:%s:\n' "$name" "$gid" >> "$target/etc/group"
+	fi
+}
+
+ensure_user_line() {
+	target=$1
+	name=$2
+	uid=$3
+	gid=$4
+	gecos=$5
+	home=$6
+	shell=$7
+
+	if ! grep -q "^$name:" "$target/etc/passwd"; then
+		printf '%s:x:%s:%s:%s:%s:%s\n' "$name" "$uid" "$gid" "$gecos" "$home" "$shell" >> "$target/etc/passwd"
+	fi
+}
+
+ensure_target_group_member() {
+	target=$1
+	group=$2
+	member=$3
+	tmp="$target/etc/group.tmp"
+
+	if awk -F: -v group="$group" -v member="$member" '
+		$1 == group {
+			found = 1
+			n = split($4, members, ",")
+			for (i = 1; i <= n; i++)
+				if (members[i] == member)
+					member_found = 1
+		}
+		END { exit !(found && member_found) }
+	' "$target/etc/group"; then
+		return
+	fi
+
+	awk -F: -v OFS=: -v group="$group" -v member="$member" '
+		$1 == group { $4 = ($4 == "" ? member : $4 "," member) }
+		{ print }
+	' "$target/etc/group" > "$tmp"
+	mv "$tmp" "$target/etc/group"
+}
+
+configure_service_accounts() {
+	target=$1
+
+	ensure_group_line "$target" messagebus 81
+	ensure_user_line "$target" messagebus 81 81 messagebus /dev/null /sbin/nologin
+	ensure_group_line "$target" dhcpcd 101
+	ensure_user_line "$target" dhcpcd 101 101 dhcpcd /var/lib/dhcpcd /sbin/nologin
+	ensure_group_line "$target" polkitd 102
+	ensure_user_line "$target" polkitd 102 102 polkitd /var/empty /sbin/nologin
+	mkdir -p "$target/var/empty"
+	ensure_group_line "$target" shadow 42
+	ensure_group_line "$target" video 44
+	ensure_group_line "$target" sddm 240
+	ensure_user_line "$target" sddm 240 240 sddm /var/lib/sddm /sbin/nologin
+	ensure_target_group_member "$target" video sddm
+
+	if [ -x "$target/usr/bin/dbus-uuidgen" ]; then
+		chroot "$target" /usr/bin/dbus-uuidgen --ensure=/etc/machine-id || true
+	fi
+}
+
+remove_live_user() {
+	target=$1
+
+	if grep -q '^dark:' "$target/etc/passwd"; then
+		chroot "$target" /usr/sbin/userdel -r dark 2>/dev/null || true
+	fi
+	if grep -q '^dark:' "$target/etc/group"; then
+		chroot "$target" /usr/sbin/groupdel dark 2>/dev/null || true
+	fi
+	rm -rf "$target/home/dark"
+}
+
+create_install_user() {
+	target=$1
+	username=$2
+	password=$3
+
+	for group in wheel audio video input netdev users; do
+		ensure_target_group "$target" "$group"
+	done
+
+	if grep -q "^$username:" "$target/etc/passwd"; then
+		die "user already exists in installed target: $username"
+	fi
+
+	chroot "$target" /usr/sbin/useradd \
+		-m \
+		-s /bin/sh \
+		-G wheel,audio,video,input,netdev,users \
+		"$username"
+	printf '%s:%s\n' "$username" "$password" | chroot "$target" /usr/sbin/chpasswd
+
+	uid=$(awk -F: -v user="$username" '$1 == user { print $3 }' "$target/etc/passwd")
+	gid=$(awk -F: -v user="$username" '$1 == user { print $4 }' "$target/etc/passwd")
+	if [ -n "$uid" ] && [ -n "$gid" ] && [ -d "$target/home/$username" ]; then
+		chown -R "$uid:$gid" "$target/home/$username"
+	fi
+}
+
+configure_admin_access() {
+	target=$1
+
+	mkdir -p "$target/etc/sudoers.d" "$target/etc/doas.d"
+	cat > "$target/etc/sudoers.d/darkos-wheel" <<'EOF'
+%wheel ALL=(ALL:ALL) ALL
+EOF
+	chmod 0440 "$target/etc/sudoers.d/darkos-wheel"
+	cat > "$target/etc/doas.d/darkos-wheel.conf" <<'EOF'
+permit persist :wheel
+EOF
+	chmod 0644 "$target/etc/doas.d/darkos-wheel.conf"
+}
+
+restore_package_modes() {
+	target=$1
+
+	for path in \
+		/usr/bin/chage \
+		/usr/bin/chfn \
+		/usr/bin/chsh \
+		/usr/bin/expiry \
+		/usr/bin/gpasswd \
+		/usr/bin/doas \
+		/usr/bin/passwd \
+		/usr/bin/sudo \
+		/usr/bin/darkshutdown \
+		/usr/libexec/Xorg.wrap
+	do
+		if [ -e "$target$path" ]; then
+			chown 0:0 "$target$path"
+			chmod 4755 "$target$path"
+		fi
+	done
+
+	if [ -e "$target/usr/bin/wall" ]; then
+		chown 0:5 "$target/usr/bin/wall"
+		chmod 2755 "$target/usr/bin/wall"
+	fi
+	if [ -e "$target/etc/shadow" ]; then
+		chown 0:42 "$target/etc/shadow"
+		chmod 0640 "$target/etc/shadow"
+	fi
+	if [ -e "$target/usr/sbin/unix_chkpwd" ]; then
+		chown 0:42 "$target/usr/sbin/unix_chkpwd"
+		chmod 02755 "$target/usr/sbin/unix_chkpwd"
+	fi
+}
+
+configure_display_manager() {
+	target=$1
+	username=$2
+	autologin=$3
+	sddm_uid=
+	sddm_gid=
+
+	rm -f "$target/etc/runlevels/default/darkos-x" \
+		"$target/etc/runlevels/boot/networking" \
+		"$target/etc/runlevels/default/networkmanager" \
+		"$target/etc/runlevels/default/wpa_supplicant"
+	mkdir -p "$target/etc/runlevels/default" "$target/etc/sddm.conf.d"
+	if [ -e "$target/etc/init.d/wpa_supplicant" ]; then
+		ln -sf ../../init.d/wpa_supplicant "$target/etc/runlevels/default/wpa_supplicant"
+	fi
+	if [ -e "$target/etc/init.d/networkmanager" ]; then
+		ln -sf ../../init.d/networkmanager "$target/etc/runlevels/default/networkmanager"
+	fi
+	if [ -e "$target/etc/init.d/sddm" ]; then
+		ln -sf ../../init.d/sddm "$target/etc/runlevels/default/sddm"
+	else
+		echo "WARNING: SDDM OpenRC service is missing; installed system will keep console login."
+	fi
+
+	cat > "$target/etc/sddm.conf.d/darkos.conf" <<EOF
+[General]
+DisplayServer=x11
+GreeterEnvironment=
+InputMethod=
+
+[Theme]
+Current=breeze
+
+[Users]
+HideUsers=root
+MinimumUid=1000
+
+[Autologin]
+Session=darkos-plasma-wayland.desktop
+EOF
+	if [ "$autologin" = yes ]; then
+		printf 'User=%s\n' "$username" >> "$target/etc/sddm.conf.d/darkos.conf"
+	fi
+
+	mkdir -p "$target/var/lib/sddm" "$target/var/cache/sddm" "$target/var/log/sddm"
+	sddm_uid=$(awk -F: '$1 == "sddm" { print $3 }' "$target/etc/passwd")
+	sddm_gid=$(awk -F: '$1 == "sddm" { print $4 }' "$target/etc/passwd")
+	if [ -n "$sddm_uid" ] && [ -n "$sddm_gid" ]; then
+		chown -R "$sddm_uid:$sddm_gid" \
+			"$target/var/lib/sddm" \
+			"$target/var/cache/sddm" \
+			"$target/var/log/sddm"
+	fi
+}
+
+configure_installed_system() {
+	target=$1
+
+	ensure_installed_init "$target"
+	restore_package_modes "$target"
+	configure_service_accounts "$target"
+	remove_live_user "$target"
+	create_install_user "$target" "$INSTALL_USER" "$INSTALL_PASSWORD"
+	configure_admin_access "$target"
+	configure_display_manager "$target" "$INSTALL_USER" "$INSTALL_AUTOLOGIN"
+}
+
+write_fstab() {
+	target=$1
+	root_uuid=$2
+	efi_uuid=$3
+
+	cat > "$target/etc/fstab" <<EOF
+UUID=$root_uuid	/	ext4	rw,relatime	0	1
+UUID=$efi_uuid	/boot/efi	vfat	umask=0077	0	2
+proc	/proc	proc	defaults	0	0
+sysfs	/sys	sysfs	defaults	0	0
+devpts	/dev/pts	devpts	gid=5,mode=620	0	0
+tmpfs	/run	tmpfs	mode=0755,nosuid,nodev	0	0
+tmpfs	/tmp	tmpfs	mode=1777,nosuid,nodev	0	0
+EOF
+}
+
+write_grub_cfg() {
+	target=$1
+	root_partuuid=$2
+
+	mkdir -p "$target/boot/grub/fonts"
+	if [ -f "$target/usr/share/grub/unicode.pf2" ]; then
+		install -m 0644 "$target/usr/share/grub/unicode.pf2" "$target/boot/grub/fonts/unicode.pf2"
+	elif [ -f /usr/share/grub/unicode.pf2 ]; then
+		install -m 0644 /usr/share/grub/unicode.pf2 "$target/boot/grub/fonts/unicode.pf2"
+	fi
+
+	cat > "$target/boot/grub/grub.cfg" <<EOF
+set default=0
+set timeout=3
+set gfxmode=auto
+set gfxpayload=keep
+
+insmod all_video
+insmod font
+if loadfont /boot/grub/fonts/unicode.pf2; then
+	insmod gfxterm
+	terminal_output gfxterm
+fi
+
+menuentry 'DarkOS' {
+	linux /boot/vmlinuz-lts root=PARTUUID=$root_partuuid rootfstype=ext4 rw init=/sbin/init quiet
+	initrd /boot/initramfs-lts
+}
+EOF
+}
+
+copy_initramfs_file() {
+	src=$1
+	dst=$2
+
+	if [ -e "$src" ]; then
+		mkdir -p "$(dirname "$dst")"
+		cp -L "$src" "$dst"
+	fi
+}
+
+copy_initramfs_lib() {
+	target=$1
+	stage=$2
+	rel=$3
+
+	if [ -e "$target/$rel" ]; then
+		copy_initramfs_file "$target/$rel" "$stage/$rel"
+		case "$rel" in
+			/usr/lib/*)
+				copy_initramfs_file "$target/$rel" "$stage/lib/$(basename "$rel")"
+				;;
+		esac
+	fi
+}
+
+make_initramfs() {
+	target=$1
+	kernel_version=$(
+		find "$target/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1
+	)
+	[ -n "$kernel_version" ] || die "could not find installed kernel modules"
+	[ -x "$target/usr/lib/darkos/darkdiskinit" ] || die "missing DarkOS disk init"
+	echo "Generating DarkOS initramfs for $kernel_version..."
+
+	INITRAMFS_STAGE=${TMPDIR:-/tmp}/darkos-installed-initramfs.$$
+	rm -rf "$INITRAMFS_STAGE"
+	mkdir -p \
+		"$INITRAMFS_STAGE/bin" \
+		"$INITRAMFS_STAGE/sbin" \
+		"$INITRAMFS_STAGE/lib" \
+		"$INITRAMFS_STAGE/usr/lib" \
+		"$INITRAMFS_STAGE/proc" \
+		"$INITRAMFS_STAGE/sys" \
+		"$INITRAMFS_STAGE/dev" \
+		"$INITRAMFS_STAGE/run" \
+		"$INITRAMFS_STAGE/newroot"
+
+	install -m 0755 "$target/usr/lib/darkos/darkdiskinit" "$INITRAMFS_STAGE/init"
+	cp -L "$target/bin/kmod" "$INITRAMFS_STAGE/bin/kmod"
+	chmod 0755 "$INITRAMFS_STAGE/bin/kmod"
+	ln -sf ../bin/kmod "$INITRAMFS_STAGE/sbin/modprobe"
+	cp -a "$target/lib/modules" "$INITRAMFS_STAGE/lib/modules"
+
+	for lib in \
+		/lib/ld-musl-x86_64.so.1 \
+		/lib/libc.musl-x86_64.so.1 \
+		/lib/libz.so.1 \
+		/usr/lib/ld-musl-x86_64.so.1 \
+		/usr/lib/libc.so.1 \
+		/usr/lib/libc.musl-x86_64.so.1 \
+		/usr/lib/libzstd.so.1 \
+		/usr/lib/liblzma.so.5 \
+		/usr/lib/libz.so.1 \
+		/usr/lib/libcrypto.so.3 \
+		/usr/lib/libbrotlienc.so.1 \
+		/usr/lib/libbrotlidec.so.1 \
+		/usr/lib/libbrotlicommon.so.1
+	do
+		copy_initramfs_lib "$target" "$INITRAMFS_STAGE" "$lib"
+	done
+
+	(cd "$INITRAMFS_STAGE" && find . -print | cpio -o -H newc | gzip -9) > "$target/boot/initramfs-lts"
+	rm -rf "$INITRAMFS_STAGE"
+	INITRAMFS_STAGE=
+}
+
+install_grub() {
+	disk=$1
+	target=$2
+
+	echo "Installing GRUB for BIOS..."
+	grub-install --target=i386-pc --boot-directory="$target/boot" --recheck "$disk"
+
+	echo "Installing GRUB for removable UEFI..."
+	grub-install \
+		--target=x86_64-efi \
+		--efi-directory="$target/boot/efi" \
+		--boot-directory="$target/boot" \
+		--removable \
+		--recheck
+}
+
+main() {
+	case "${1:-}" in
+		-h|--help|help)
+			usage
+			exit 0
+			;;
+	esac
+
+	[ "$(id -u)" -eq 0 ] || die "run as root"
+
+	for cmd in awk basename blkid cat chown chroot cp cpio dirname find grep grub-install gzip install lsblk mkfs.ext4 mkfs.vfat mount mountpoint parted partprobe rsync sort stty sync tail umount; do
+		need_cmd "$cmd"
+	done
+
+	disk=$(select_target_disk "${1:-}")
+	[ -n "$disk" ] || die "no target disk selected"
+	[ -b "$disk" ] || die "$disk is not a block device"
+
+	case "$(lsblk -dnpo TYPE "$disk" 2>/dev/null)" in
+		disk) ;;
+		*) die "$disk is not a whole disk" ;;
+	esac
+
+	confirm_wipe "$disk"
+	prompt_user_setup
+	trap cleanup EXIT INT TERM
+
+	echo "Unmounting existing partitions on $disk..."
+	for part in $(lsblk -lnpo NAME "$disk" | sed '1d'); do
+		umount "$part" 2>/dev/null || true
+	done
+
+	echo "Creating hybrid BIOS/UEFI GPT layout..."
+	parted -s "$disk" mklabel gpt
+	parted -s "$disk" mkpart BIOSBOOT 1MiB 3MiB
+	parted -s "$disk" set 1 bios_grub on
+	parted -s "$disk" mkpart EFI fat32 3MiB 515MiB
+	parted -s "$disk" set 2 esp on
+	parted -s "$disk" mkpart DARKOS ext4 515MiB 100%
+	partprobe "$disk" || true
+	sleep 2
+
+	efi_part=$(part_name "$disk" 2)
+	root_part=$(part_name "$disk" 3)
+	[ -b "$efi_part" ] || die "EFI partition did not appear: $efi_part"
+	[ -b "$root_part" ] || die "root partition did not appear: $root_part"
+
+	echo "Formatting filesystems..."
+	mkfs.vfat -F 32 -n DARKOSEFI "$efi_part"
+	mkfs.ext4 -F -L DARKOS_ROOT "$root_part"
+
+	mkdir -p "$TARGET_MNT"
+	mount "$root_part" "$TARGET_MNT"
+	copy_system "$TARGET_MNT"
+
+	mkdir -p "$TARGET_MNT/boot/efi"
+	mount "$efi_part" "$TARGET_MNT/boot/efi"
+	mount_target_apis "$TARGET_MNT"
+
+	root_uuid=$(blkid -s UUID -o value "$root_part")
+	root_partuuid=$(blkid -s PARTUUID -o value "$root_part")
+	efi_uuid=$(blkid -s UUID -o value "$efi_part")
+	[ -n "$root_uuid" ] || die "could not read root UUID"
+	[ -n "$root_partuuid" ] || die "could not read root PARTUUID"
+	[ -n "$efi_uuid" ] || die "could not read EFI UUID"
+
+	write_fstab "$TARGET_MNT" "$root_uuid" "$efi_uuid"
+	configure_installed_system "$TARGET_MNT"
+	make_initramfs "$TARGET_MNT"
+	write_grub_cfg "$TARGET_MNT" "$root_partuuid"
+	install_grub "$disk" "$TARGET_MNT"
+
+	sync
+	echo
+	echo "DarkOS installed to $disk."
+	echo "You can reboot and select the disk from BIOS/UEFI."
+}
+
+main "$@"

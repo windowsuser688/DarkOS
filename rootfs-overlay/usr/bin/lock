@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if command -v loginctl >/dev/null 2>&1; then
+	exec loginctl lock-session
+fi
+
+echo "lock: no locker is available" >&2
+exit 1

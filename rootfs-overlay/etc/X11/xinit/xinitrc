@@ -1,0 +1,102 @@
+#!/bin/sh
+
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
+export BROWSER="${BROWSER:-chromium}"
+export GDK_BACKEND=x11,wayland
+export GDK_GL="${GDK_GL:-disable}"
+export GIO_EXTRA_MODULES=/usr/lib/gio/modules
+export NO_AT_BRIDGE=1
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
+export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export WEBKIT_WEBGL_DISABLE_GBM="${WEBKIT_WEBGL_DISABLE_GBM:-1}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+export MESA_SHADER_CACHE_DIR="${MESA_SHADER_CACHE_DIR:-$XDG_CACHE_HOME/mesa}"
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+export QT_QPA_PLATFORM=xcb
+
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" \
+	"$MESA_SHADER_CACHE_DIR" "$HOME/.mozilla" 2>/dev/null || true
+
+if command -v dbus-launch >/dev/null 2>&1; then
+	eval "$(dbus-launch --sh-syntax --exit-with-x11 2>/dev/null)" || true
+fi
+
+if command -v darkos-gtk-setup >/dev/null 2>&1; then
+	darkos-gtk-setup >/tmp/darkos-gtk-setup.log 2>&1 || true
+fi
+if [ -r /run/darkos/gtk/env.sh ]; then
+	. /run/darkos/gtk/env.sh
+fi
+
+if command -v xrdb >/dev/null 2>&1 && [ -r /etc/X11/Xresources ]; then
+	xrdb -merge /etc/X11/Xresources >/tmp/xrdb.log 2>&1 || true
+fi
+
+if command -v xdg-user-dirs-update >/dev/null 2>&1; then
+	xdg-user-dirs-update >/tmp/xdg-user-dirs.log 2>&1 || true
+fi
+
+if command -v darkos-desktop-setup >/dev/null 2>&1; then
+	darkos-desktop-setup >/tmp/darkos-desktop-setup.log 2>&1 || true
+fi
+
+command -v xsetroot >/dev/null 2>&1 && xsetroot -solid '#1b1e24' &
+if grep -qw 'darkos.smoke=chromium' /proc/cmdline 2>/dev/null; then
+	(
+		sleep 4
+		echo "darkos-smoke: testing png icon fallback" >/dev/console
+		gdk-pixbuf-pixdata /usr/share/icons/Adwaita/scalable/status/image-missing.png /tmp/darkos-image-missing.pixdata >/dev/null 2>/dev/console
+		echo "darkos-smoke: png icon status=$?" >/dev/console
+		echo "darkos-smoke: launching chromium" >/dev/console
+		chromium about:blank >/dev/console 2>&1
+		echo "darkos-smoke: chromium exited status=$?" >/dev/console
+	) &
+fi
+
+session=plasma
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+	case "$arg" in
+		darkos.session=*)
+			session=${arg#darkos.session=}
+			;;
+	esac
+done
+
+start_twm() {
+	xterm -ls -fa 'DejaVu Sans Mono' -fs 10 -geometry 90x28+24+24 &
+	xeyes -geometry 150x100-24+24 &
+	exec twm
+}
+
+case "$session" in
+	twm)
+		echo "darkos-session: starting twm" >/dev/console 2>/dev/null || true
+		start_twm
+		;;
+	xterm)
+		echo "darkos-session: starting xterm rescue session" >/dev/console 2>/dev/null || true
+		exec xterm -ls -fa 'DejaVu Sans Mono' -fs 10 -geometry 100x32+24+24
+		;;
+	plasma|'')
+		if command -v startplasma-x11 >/dev/null 2>&1; then
+			echo "darkos-session: starting KDE Plasma X11" >/dev/console 2>/dev/null || true
+			startplasma-x11 >/tmp/startplasma-x11.log 2>&1
+			status=$?
+			echo "darkos-session: Plasma X11 exited status=$status" >/dev/console 2>/dev/null || true
+			[ "$status" -eq 0 ] && exit 0
+		else
+			echo "darkos-session: startplasma-x11 missing, falling back to twm" >/dev/console 2>/dev/null || true
+		fi
+		start_twm
+		;;
+	*)
+		echo "darkos-session: unknown session '$session', falling back to twm" >/dev/console 2>/dev/null || true
+		start_twm
+		;;
+esac

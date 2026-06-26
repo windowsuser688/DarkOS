@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+
+description="Start DarkOS Xorg session with KDE Plasma X11"
+command="/usr/bin/darkos-x-session"
+command_background="yes"
+pidfile="/run/darkos-x.pid"
+output_log="/var/log/darkos-x.log"
+error_log="/var/log/darkos-x.log"
+
+depend() {
+	need localmount
+	after darkos-fb dbus elogind polkit
+}

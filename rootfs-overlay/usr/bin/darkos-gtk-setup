@@ -1,0 +1,72 @@
+#!/bin/sh
+set -u
+
+RUNDIR=/run/darkos/gtk
+SHAREDIR=$RUNDIR/share
+MIMEDIR=$SHAREDIR/mime
+SCHEMAS=$RUNDIR/schemas
+PIXBUF_CACHE=$RUNDIR/gdk-pixbuf.loaders
+IM_CACHE=$RUNDIR/gtk.immodules
+PIXBUF_ENV=
+
+mkdir -p "$RUNDIR" "$SHAREDIR" "$MIMEDIR" "$SCHEMAS"
+
+log() {
+	printf '%s\n' "darkos-gtk-setup: $*" >/dev/console 2>/dev/null || true
+}
+
+if [ -d /usr/share/glib-2.0/schemas ]; then
+	cp /usr/share/glib-2.0/schemas/*.xml "$SCHEMAS"/ 2>/dev/null || true
+	cp /usr/share/glib-2.0/schemas/*.gschema.override "$SCHEMAS"/ 2>/dev/null || true
+	if command -v glib-compile-schemas >/dev/null 2>&1; then
+		glib-compile-schemas "$SCHEMAS" 2>/tmp/darkos-gschemas.log || true
+	fi
+fi
+
+if [ -d /usr/share/mime/packages ]; then
+	mkdir -p "$MIMEDIR/packages"
+	cp /usr/share/mime/packages/* "$MIMEDIR/packages"/ 2>/dev/null || true
+	if command -v update-mime-database >/dev/null 2>&1; then
+		update-mime-database "$MIMEDIR" 2>/tmp/darkos-mime.log || true
+		if [ -s "$MIMEDIR/mime.cache" ]; then
+			log "mime database ready"
+		fi
+	fi
+fi
+
+if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
+	if [ -d /usr/lib/gdk-pixbuf-2.0/2.10.0/loaders ]; then
+		GDK_PIXBUF_MODULEDIR=/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders \
+			gdk-pixbuf-query-loaders > "$PIXBUF_CACHE" 2>/tmp/darkos-pixbuf.log || true
+		if [ -s "$PIXBUF_CACHE" ]; then
+			PIXBUF_ENV="export GDK_PIXBUF_MODULE_FILE=$PIXBUF_CACHE"
+			log "using gdk-pixbuf loader cache"
+		fi
+	else
+		rm -f "$PIXBUF_CACHE"
+		log "using glycin image loaders"
+	fi
+fi
+
+if command -v gtk-query-immodules-3.0 >/dev/null 2>&1; then
+	gtk-query-immodules-3.0 > "$IM_CACHE" 2>/tmp/darkos-immodules.log || true
+fi
+
+cat > "$RUNDIR/env.sh" <<EOF
+export GDK_BACKEND=wayland,x11
+export GDK_GL=\${GDK_GL:-disable}
+export GIO_EXTRA_MODULES=/usr/lib/gio/modules
+export GTK_THEME=\${GTK_THEME:-adw-gtk3}
+export LIBGL_ALWAYS_SOFTWARE=\${LIBGL_ALWAYS_SOFTWARE:-0}
+export WEBKIT_DISABLE_COMPOSITING_MODE=\${WEBKIT_DISABLE_COMPOSITING_MODE:-1}
+export WEBKIT_DISABLE_DMABUF_RENDERER=\${WEBKIT_DISABLE_DMABUF_RENDERER:-1}
+export WEBKIT_WEBGL_DISABLE_GBM=\${WEBKIT_WEBGL_DISABLE_GBM:-1}
+export GSETTINGS_SCHEMA_DIR=$SCHEMAS
+$PIXBUF_ENV
+export GTK_IM_MODULE_FILE=$IM_CACHE
+export XDG_DATA_DIRS=$SHAREDIR:/usr/local/share:/usr/share
+export NO_AT_BRIDGE=1
+EOF
+
+chmod 0644 "$RUNDIR/env.sh" 2>/dev/null || true
+log "ready"

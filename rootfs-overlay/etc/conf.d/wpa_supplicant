@@ -1,0 +1,6 @@
+# conf.d file for wpa_supplicant
+#
+# Run in D-Bus mode so NetworkManager can control wpa_supplicant for Wi-Fi.
+# NM uses the D-Bus interface to scan, associate, and manage Wi-Fi connections.
+wpa_supplicant_args="-u"
+wpa_supplicant_dbus=yes

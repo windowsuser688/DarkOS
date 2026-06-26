@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=WaylandSession
+Name=DarkOS Plasma Wayland
+Comment=KDE Plasma desktop using KWin on Wayland
+Exec=/usr/bin/darkos-plasma-session
+TryExec=/usr/bin/darkos-plasma-session
+DesktopNames=KDE

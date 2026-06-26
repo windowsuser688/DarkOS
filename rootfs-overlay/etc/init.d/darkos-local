@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+
+description="DarkOS local boot setup"
+
+depend() {
+	need localmount
+	after bootmisc
+	before sddm
+}
+
+start() {
+	ebegin "Preparing DarkOS runtime directories"
+	mkdir -p /run/user/1000 /home/dark/.cache /home/dark/.config /home/dark/.local/share
+	chown -R dark:dark /home/dark /run/user/1000
+	chmod 700 /run/user/1000 /home/dark /home/dark/.cache /home/dark/.config /home/dark/.local
+	chmod 1777 /tmp
+	eend 0
+}

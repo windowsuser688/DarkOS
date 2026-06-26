@@ -1,0 +1,84 @@
+#!/sbin/openrc-run
+
+description="Prepare DarkOS framebuffer device"
+
+depend() {
+	need dev
+	before xdm
+}
+
+load_module() {
+	modprobe -q "$1" 2>/dev/null || true
+}
+
+load_graphics_modules() {
+	load_module simpledrm
+
+	for device in /sys/bus/pci/devices/*; do
+		[ -r "$device/class" ] && [ -r "$device/vendor" ] || continue
+		class=$(cat "$device/class" 2>/dev/null || true)
+		vendor=$(cat "$device/vendor" 2>/dev/null || true)
+		case "$class" in
+			0x03*) ;;
+			*) continue ;;
+		esac
+
+		case "$vendor" in
+			0x1234) load_module bochs ;;
+			0x1b36) load_module qxl ;;
+			0x1af4) load_module virtio_gpu ;;
+			0x15ad) load_module vmwgfx ;;
+			0x80ee)
+				load_module vboxguest
+				load_module vboxvideo
+				;;
+			0x1013) load_module cirrus_qemu ;;
+			0x8086) load_module i915 ;;
+			0x1002)
+				load_module amdgpu
+				load_module radeon
+				;;
+			0x10de) load_module nouveau ;;
+			0x1a03) load_module ast ;;
+			0x102b) load_module mgag200 ;;
+		esac
+	done
+}
+
+start() {
+	ebegin "Preparing DarkOS input, audio, and video devices"
+	mkdir -p /run/udev /run/udev/data
+	if [ -x /sbin/udevd ]; then
+		/sbin/udevd --daemon 2>/dev/null || true
+	fi
+	for module in \
+		i8042 libps2 atkbd applespi cros_ec_keyb cypress_sf gpio_keys \
+		gpio_keys_polled hyperv_keyboard sparse_keymap matrix_keymap \
+		serio_raw psmouse evdev mousedev joydev uinput \
+		sermouse synaptics_usb synaptics_i2c \
+		xhci_pci ehci_pci ohci_pci uhci_hcd hid_generic usbhid virtio_input \
+		hid_cherry hid_asus hid_lenovo hid_keytouch hid_prodikeys \
+		uhid hid_multitouch hid_logitech hid_logitech_dj hid_logitech_hidpp \
+		hid_microsoft hid_apple hid_magicmouse wacom i2c_hid i2c_hid_acpi \
+		snd snd_pcm snd_seq snd_rawmidi snd_hda_intel snd_intel8x0 snd_usb_audio
+	do
+		load_module "$module"
+	done
+	load_graphics_modules
+	if [ -x /bin/udevadm ]; then
+		/bin/udevadm trigger --action=add 2>/dev/null || true
+		/bin/udevadm settle --timeout=5 2>/dev/null || true
+	fi
+	if [ -s /proc/fb ]; then
+		set -- $(sed -n '1{s/[[:space:]].*//;p;q;}' /proc/fb)
+		fbnum=${1:-0}
+		case "$fbnum" in
+			*[!0-9]*|'') fbnum=0 ;;
+		esac
+		if [ ! -e "/dev/fb$fbnum" ]; then
+			mknod "/dev/fb$fbnum" c 29 "$fbnum" 2>/dev/null || true
+		fi
+		chmod 660 "/dev/fb$fbnum" 2>/dev/null || true
+	fi
+	eend 0
+}

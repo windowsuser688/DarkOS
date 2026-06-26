@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DarkOS Session Setup
+Exec=/usr/bin/darkos-session-setup
+OnlyShowIn=KDE;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-phase=2

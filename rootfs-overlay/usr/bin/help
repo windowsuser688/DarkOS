@@ -1,0 +1,140 @@
+#!/bin/sh
+
+topic=${1:-}
+
+list_commands() {
+	tmp=${TMPDIR:-/tmp}/darkos-help-commands.$$
+	: > "$tmp" || exit 1
+	for dir in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin; do
+		[ -d "$dir" ] || continue
+		for path in "$dir"/*; do
+			[ -e "$path" ] || continue
+			[ -d "$path" ] && continue
+			[ -x "$path" ] || continue
+			printf '%s\n' "${path##*/}"
+		done
+	done | sort -u > "$tmp"
+	count=$(wc -l < "$tmp" | tr -d ' ')
+	printf 'DarkOS installed commands (%s)\n\n' "$count"
+	sed 's/^/  /' "$tmp"
+	rm -f "$tmp"
+}
+
+summary() {
+	cat <<'EOF'
+DarkOS help
+
+Main commands:
+  help                       show this summary plus every installed command
+  help commands              show every installed command
+  help network               networking and internet setup
+  help desktop               Plasma Wayland apps and input tools
+  help dpk                   DarkOS Package Manager
+  help install               install DarkOS to a disk
+  help posix                 POSIX and ELF tools
+
+Quick start:
+  darkos-install             install DarkOS to a target disk
+  network-status             see whether you are online
+  network-up                 retry DHCP if you are offline
+  chromium                    default web browser
+  dpk search <name>          search Alpine packages
+  reboot                     reboot DarkOS
+  poweroff                   power off DarkOS
+  darkelf /bin/ls            inspect an ELF binary
+EOF
+}
+
+case "$topic" in
+	network|net)
+		cat <<'EOF'
+DarkOS network help
+
+Commands:
+  network-status              show interfaces, routes, DNS, and quick ping tests
+  network-up                  load common NIC drivers and DHCP the first interface
+  network-up eth0             DHCP a specific interface
+  ip addr                     show IP addresses
+  ip route                    show routes
+  ping -c 3 1.1.1.1           test raw internet reachability
+  ping -c 3 alpine.org        test DNS plus internet reachability
+
+Wi-Fi:
+  wpa_supplicant is included, but Wi-Fi needs your SSID/password config and
+  the right firmware for the adapter. For a temporary config, use /tmp/wpa.conf
+  and then run:
+    wpa_supplicant -B -i wlan0 -c /tmp/wpa.conf
+    network-up wlan0
+EOF
+		;;
+	packages|dpk)
+		cat <<'EOF'
+DarkOS package help
+
+Commands:
+  dpk update                  refresh Alpine-backed package indexes
+  dpk search <name>           search packages
+  dpk add <package>           install a package
+  dpk del <package>           remove a package
+  dpk info <package>          show package info
+  dpk repos                   list Alpine repositories
+EOF
+		;;
+	install|installer)
+		cat <<'EOF'
+DarkOS install help
+
+The live Plasma Wayland desktop has one launcher: Install DarkOS.
+
+Terminal command:
+  darkos-install              auto-detect and install to a target disk
+  darkos-install /dev/sda     install to a specific disk
+  darkos-install /dev/nvme0n1 install to a specific NVMe disk
+
+The installer erases the selected disk and creates a hybrid BIOS/UEFI layout.
+EOF
+		;;
+	x|xorg|wayland|desktop)
+		cat <<'EOF'
+DarkOS desktop help
+
+KDE Plasma 6.7 starts automatically on Wayland with KWin. X11 apps run through Xwayland.
+  konsole                     terminal
+  xterm                       fallback terminal
+  chromium                       default web browser
+  xeyes                       classic X test app
+  dolphin                     file manager
+  systemsettings              Plasma settings
+  lock                        lock the current session
+  logout                      log out to SDDM
+  xloadimage <file>           image viewer
+  mpv <file-or-url>           media player
+  xinput list                 list Xwayland input devices
+  evtest                      inspect Linux input events
+EOF
+		;;
+	posix|elf|dev)
+		cat <<'EOF'
+DarkOS developer help
+
+Commands:
+  posix-check                 check musl/POSIX runtime pieces
+  darkelf <path>              inspect an ELF executable
+  cc --version                compiler, when installed
+  man <command>               read manual pages
+EOF
+		;;
+	commands|cmds|all)
+		list_commands
+		;;
+	-h|--help|'')
+		summary
+		printf '\n'
+		list_commands
+		;;
+		*)
+			echo "help: unknown topic: $topic" >&2
+			echo "try: help, help commands, help network, help desktop, help dpk, help install, help posix" >&2
+			exit 2
+			;;
+esac

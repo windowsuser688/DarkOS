@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+printf 'DarkOS POSIX runtime check\n'
+printf 'sh: '
+readlink /bin/sh || true
+printf 'libc: '
+/lib/ld-musl-*.so.1 --version 2>&1 | head -n 1
+printf 'cc headers: '
+if [ -d /usr/include ] && [ -e /usr/include/unistd.h ]; then
+	echo 'present'
+else
+	echo 'missing'
+	exit 1
+fi
+printf 'utilities: '
+for cmd in sh awk sed grep make getconf xargs find; do
+	command -v "$cmd" >/dev/null || { echo "missing $cmd"; exit 1; }
+done
+echo 'present'

@@ -1,0 +1,4 @@
+# Protect the init process from killprocs during shutdown.
+# When killprocs runs in a child process, killall5 may otherwise send
+# signals to PID 1 and panic the kernel.
+killall5_opts="-o 1"

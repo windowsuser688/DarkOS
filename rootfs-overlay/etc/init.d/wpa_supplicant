@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+# DarkOS override: start wpa_supplicant in D-Bus mode (-u) so NetworkManager
+# can use it as its Wi-Fi backend via the fi.w1.wpa_supplicant1 D-Bus interface.
+# The upstream Alpine init script has a bug where $wpa_supplicant_dbus is never
+# expanded (missing $), so -u is never appended. We bypass that entirely here.
+
+supervisor=supervise-daemon
+name="WPA Supplicant"
+description="Wi-Fi Protected Access client and IEEE 802.1X supplicant"
+
+command=/sbin/wpa_supplicant
+command_args_foreground="-u -g /run/wpa_supplicant/global"
+output_log=/var/log/wpa_supplicant.log
+error_log=/var/log/wpa_supplicant.log
+respawn_delay=2
+respawn_max=5
+respawn_period=30
+
+depend() {
+	need dbus localmount
+	after bootmisc modules udev-settle
+	before networkmanager
+	keyword -shutdown
+	provide wlan
+}
+
+start_pre() {
+	checkpath -d -m 0755 -o root:root /var/run/wpa_supplicant
+	checkpath -d -m 0755 -o root:root /run/wpa_supplicant
+	checkpath -f -m 0644 -o root:root /var/log/wpa_supplicant.log
+	rm -f /run/wpa_supplicant/global
+
+	i=0
+	while [ ! -S /run/dbus/system_bus_socket ] && [ "$i" -lt 50 ]; do
+		i=$((i + 1))
+		sleep 0.1
+	done
+
+	if [ ! -S /run/dbus/system_bus_socket ]; then
+		eerror "D-Bus system socket is not ready"
+		return 1
+	fi
+}

@@ -1,0 +1,16 @@
+Welcome to DarkOS.
+
+Commands:
+  help                   show DarkOS help topics
+  help network           show networking commands
+  network-status         check IP, routes, DNS, and ping
+  chromium                  default web browser
+  network-up             retry network driver loading and DHCP
+  dpk update             update Alpine-backed package indexes
+  dpk add xterm          install packages
+  reboot                 reboot DarkOS
+  poweroff               power off DarkOS
+  KDE Plasma 6.7         starts automatically on Wayland
+  posix-check            check musl/POSIX runtime pieces
+  weston                 start a Wayland compositor
+  darkelf /bin/ls        inspect an ELF executable

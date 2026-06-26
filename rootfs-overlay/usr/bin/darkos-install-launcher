@@ -1,0 +1,2 @@
+#!/bin/sh
+exec konsole --title "Install DarkOS" --hold -e doas /usr/bin/darkos-install

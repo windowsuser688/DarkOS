@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+
+supervisor=supervise-daemon
+command=/usr/sbin/NetworkManager
+command_args_foreground="-n"
+
+description="Network Manager Daemon"
+
+depend() {
+	need dbus wpa_supplicant
+	after darkos-fb
+	before sddm
+	provide net
+}
+
+start_pre() {
+	checkpath -d -m 0755 -o root:root /run/NetworkManager
+	checkpath -d -m 0700 -o root:root /var/lib/NetworkManager
+}

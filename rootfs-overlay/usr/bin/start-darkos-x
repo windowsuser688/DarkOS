@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+export HOME=/root
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
+export BROWSER=chromium
+export XDG_CACHE_HOME=/root/.cache
+export XDG_CONFIG_HOME=/root/.config
+export XDG_DATA_HOME=/root/.local/share
+export MESA_SHADER_CACHE_DIR=/root/.cache/mesa
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+export QT_QPA_PLATFORM=xcb
+
+if ! touch /root/.darkos-write-test 2>/dev/null; then
+	mount -t tmpfs tmpfs /root 2>/dev/null || true
+fi
+rm -f /root/.darkos-write-test 2>/dev/null || true
+
+mkdir -p /root/.cache /root/.cache/mesa /root/.config /root/.local/share /root/.mozilla
+chmod 700 /root /root/.cache /root/.cache/mesa /root/.config /root/.local \
+	/root/.local/share /root/.mozilla
+
+xconf=$(/usr/bin/darkos-x-config)
+
+exec startx /etc/X11/xinit/xinitrc -- -retro -config "$xconf" -configdir /run/darkos/xorg.conf.d -logfile /tmp/Xorg.0.log

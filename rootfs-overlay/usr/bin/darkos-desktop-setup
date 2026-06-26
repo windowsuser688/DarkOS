@@ -1,0 +1,43 @@
+#!/bin/sh
+set -eu
+
+home=${HOME:-/root}
+wallpaper=/usr/share/backgrounds/darkos/wallpaper.jpg
+desktop="$home/Desktop"
+launcher=/usr/share/applications/darkos-install.desktop
+desktop_launcher="$desktop/install-darkos.desktop"
+
+mkdir -p "$desktop"
+
+if [ -e /etc/darkos/live-image ]; then
+	cp "$launcher" "$desktop_launcher"
+	chmod 0755 "$desktop_launcher"
+	for item in "$desktop"/* "$desktop"/.[!.]* "$desktop"/..?*; do
+		[ -e "$item" ] || continue
+		[ "$item" = "$desktop_launcher" ] && continue
+		rm -rf "$item"
+	done
+else
+	rm -f "$desktop_launcher"
+fi
+
+wait_for_plasma() {
+	attempt=0
+	while [ "$attempt" -lt 30 ]; do
+		if command -v qdbus6 >/dev/null 2>&1 && \
+			qdbus6 org.kde.plasmashell >/dev/null 2>&1; then
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+if [ -f "$wallpaper" ] && command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then
+	wait_for_plasma || true
+	if ! plasma-apply-wallpaperimage "$wallpaper" >/tmp/darkos-wallpaper.log 2>&1; then
+		sleep 2
+		plasma-apply-wallpaperimage "$wallpaper" >>/tmp/darkos-wallpaper.log 2>&1 || true
+	fi
+fi

@@ -1,0 +1,36 @@
+DarkOS network support
+======================
+
+Autostart:
+- darkinit starts /usr/bin/network-up during boot.
+- network-up loads common wired, virtual, USB Ethernet, and Wi-Fi modules.
+- DHCP uses dhcpcd.
+- /etc/resolv.conf is backed by writable /run/resolv.conf during boot.
+
+Commands:
+- help network
+- network-status
+- network-up
+- network-up eth0
+- ip addr
+- ip route
+- ping -c 3 alpine.org
+
+Common wired and virtual modules:
+- e100/e1000/e1000e/igb/igc/ixgbe
+- r8169/8139too/8139cp
+- tg3/b44/bnx2/bnx2x/bnxt_en
+- atlantic/alx/atl1/atl1c/atl1e/atl2
+- virtio_net/vmxnet3/hv_netvsc/ena/gve
+- pcnet32/ne2k_pci/forcedeth
+
+USB Ethernet modules:
+- usbnet/cdc_ether/cdc_ncm/cdc_eem/cdc_mbim/rndis_host
+- asix/ax88179_178a/dm9601/pegasus/r8152
+
+Wi-Fi userspace:
+- wpa_supplicant
+- wireless-tools
+
+Bundled firmware focuses on common wired NICs and common Realtek, Atheros,
+Broadcom, MediaTek, and Intel Wi-Fi families.

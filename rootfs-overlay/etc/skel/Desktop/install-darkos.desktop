@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Install DarkOS
+Comment=Install DarkOS to a disk
+Exec=darkos-install-launcher
+Icon=system-software-install
+Terminal=false
+Categories=System;
+StartupNotify=true

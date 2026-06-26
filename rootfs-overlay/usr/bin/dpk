@@ -1,0 +1,118 @@
+#!/bin/sh
+set -eu
+
+REPOS=${DPK_REPOSITORIES:-/etc/dpk/repositories}
+APK=${APK:-/sbin/apk}
+
+usage() {
+	cat <<'EOF'
+dpk - DarkOS Package Manager
+
+usage:
+  dpk update
+  dpk search <pattern>
+  dpk add <package>...
+  dpk del <package>...
+  dpk info <package>
+  dpk list
+  dpk repos
+EOF
+}
+
+ensure_apk_runtime() {
+	mkdir -p /lib/apk/db /etc/apk /var/cache/apk
+	[ -f /lib/apk/db/installed ] || : > /lib/apk/db/installed
+	if [ ! -f /lib/apk/db/scripts.tar ]; then
+		if command -v tar >/dev/null 2>&1 && tar -cf /lib/apk/db/scripts.tar --files-from /dev/null 2>/dev/null; then
+			:
+		else
+			dd if=/dev/zero of=/lib/apk/db/scripts.tar bs=1024 count=1 >/dev/null 2>&1 || : > /lib/apk/db/scripts.tar
+		fi
+	fi
+	[ -f /lib/apk/db/triggers ] || : > /lib/apk/db/triggers
+	[ -f /lib/apk/db/lock ] || : > /lib/apk/db/lock
+	[ -f /etc/apk/world ] || : > /etc/apk/world
+	if [ ! -r "$REPOS" ]; then
+		echo "dpk: repositories file missing: $REPOS" >&2
+		exit 1
+	fi
+}
+
+have_apk_indexes() {
+	ls /var/cache/apk/APKINDEX.* >/dev/null 2>&1
+}
+
+apk_run() {
+	ensure_apk_runtime
+	exec "$APK" --repositories-file "$REPOS" "$@"
+}
+
+apk_run_with_indexes() {
+	ensure_apk_runtime
+	if ! have_apk_indexes; then
+		"$APK" --repositories-file "$REPOS" update
+	fi
+	exec "$APK" --repositories-file "$REPOS" "$@"
+}
+
+apk_add() {
+	ensure_apk_runtime
+	if [ "$#" -eq 0 ]; then
+		echo "dpk: add needs at least one package" >&2
+		exit 2
+	fi
+	for pkg do
+		case "$pkg" in
+			busybox|busybox[\<\>\=\~]*|busybox-*|busybox-binsh|busybox-binsh[\<\>\=\~]*|ssl_client|ssl_client[\<\>\=\~]*)
+				echo "dpk: refusing to install BusyBox-origin packages on DarkOS" >&2
+				exit 1
+				;;
+		esac
+	done
+	plain_names=1
+	for pkg do
+		case "$pkg" in
+			*[\<\>\=\~]*) plain_names=0 ;;
+		esac
+	done
+	if [ "$plain_names" -eq 1 ] && "$APK" --repositories-file "$REPOS" info -e "$@" >/dev/null 2>&1; then
+		echo "dpk: already installed: $*"
+		exit 0
+	fi
+	if ! have_apk_indexes; then
+		"$APK" --repositories-file "$REPOS" update
+	fi
+	plan="${TMPDIR:-/tmp}/dpk-apk-plan.$$"
+	if "$APK" --repositories-file "$REPOS" add --simulate "$@" > "$plan" 2>&1; then
+		if grep -Eq 'Installing (busybox([[:alnum:]_.+-]*)?|ssl_client)([[:space:]]|$)' "$plan"; then
+			echo "dpk: refusing transaction that would install BusyBox-origin packages" >&2
+			cat "$plan" >&2
+			rm -f "$plan"
+			exit 1
+		fi
+		rm -f "$plan"
+		exec "$APK" --repositories-file "$REPOS" add "$@"
+	else
+		status=$?
+		cat "$plan" >&2
+		rm -f "$plan"
+		exit "$status"
+	fi
+}
+
+cmd=${1:-}
+if [ "$#" -gt 0 ]; then
+	shift
+fi
+
+case "$cmd" in
+	update) apk_run update ;;
+	search) apk_run_with_indexes search "$@" ;;
+	add|install) apk_add "$@" ;;
+	del|remove|rm) apk_run del "$@" ;;
+	info) apk_run_with_indexes info "$@" ;;
+	list) apk_run list "$@" ;;
+	repos) cat "$REPOS" ;;
+	-h|--help|help|'') usage ;;
+	*) echo "dpk: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
+esac

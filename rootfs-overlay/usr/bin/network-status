@@ -1,0 +1,45 @@
+#!/bin/sh
+set -u
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+echo "DarkOS network status"
+echo
+echo "Interfaces:"
+ip -brief addr 2>/dev/null || ip addr
+echo
+echo "Routes:"
+ip route 2>/dev/null || route -n
+echo
+echo "DNS:"
+if [ -r /etc/resolv.conf ]; then
+	sed 's/^/  /' /etc/resolv.conf
+else
+	echo "  /etc/resolv.conf is missing"
+fi
+echo
+echo "Driver hint:"
+for path in /sys/class/net/*; do
+	[ -e "$path" ] || continue
+	iface=${path##*/}
+	[ "$iface" = lo ] && continue
+	driver=$(readlink "$path/device/driver" 2>/dev/null || true)
+	if [ -n "$driver" ]; then
+		echo "  $iface: ${driver##*/}"
+	else
+		echo "  $iface: driver unknown"
+	fi
+done
+echo
+echo "Quick checks:"
+if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+	echo "  internet IP ping: ok"
+else
+	echo "  internet IP ping: failed"
+fi
+if ping -c 1 -W 3 alpine.org >/dev/null 2>&1; then
+	echo "  DNS ping: ok"
+else
+	echo "  DNS ping: failed"
+fi

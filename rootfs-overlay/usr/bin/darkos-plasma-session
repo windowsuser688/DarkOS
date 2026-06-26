@@ -1,0 +1,31 @@
+#!/bin/sh
+
+has_drm=0
+is_virtual_machine=0
+
+for card in /dev/dri/card*; do
+	if [ -c "$card" ]; then
+		has_drm=1
+		break
+	fi
+done
+
+for field in product_name sys_vendor board_vendor; do
+	info="/sys/class/dmi/id/$field"
+	[ -r "$info" ] || continue
+	if grep -Eiq 'virtualbox|vmware|qemu|kvm|bochs|parallels|hyper-v|microsoft corporation' "$info"; then
+		is_virtual_machine=1
+		break
+	fi
+done
+
+# Virtual GPUs and simple framebuffer hardware frequently lack a complete
+# OpenGL implementation. Mesa's software renderer keeps Plasma usable there.
+if [ "$is_virtual_machine" -eq 1 ] || [ "$has_drm" -eq 0 ]; then
+	export LIBGL_ALWAYS_SOFTWARE=1
+	export QT_QUICK_BACKEND=software
+	printf '%s\n' 'DarkOS: using software Plasma rendering fallback' \
+		>>/tmp/darkos-plasma-session.log
+fi
+
+exec /usr/lib/libexec/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland

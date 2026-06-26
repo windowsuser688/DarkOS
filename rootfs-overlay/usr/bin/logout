@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if command -v loginctl >/dev/null 2>&1 && [ -n "${USER:-}" ]; then
+	exec loginctl terminate-user "$USER"
+fi
+
+echo "logout: no logout helper is available" >&2
+exit 1
