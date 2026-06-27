@@ -2,7 +2,7 @@
 
 Not to be confused with [dArkOS.](https://github.com/christianhaitian/dArkOS)
 
-DarkOS is a small POSIX-oriented Linux distribution build scaffold with:
+DarkOS is a small POSIX-oriented Operating System build scaffold with:
 
 - no BusyBox in the target root filesystem
 - musl libc runtime, musl development headers, Linux headers, and a POSIX shell as `/bin/sh`
